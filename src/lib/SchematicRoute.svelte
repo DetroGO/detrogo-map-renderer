@@ -11,7 +11,7 @@
         "Blue line main": "#1565C0",
         "Green line": "#2E7D32",
         "Green line branch": "#2E7D32",
-        "Voilet line": "#6A1B9A", // Kept original spelling just in case
+        "Voilet line": "#6A1B9A",
         "Orange line": "#E65100",
         "Magenta line": "#AD1457",
         "Pink line loop": "#E91E8C",
@@ -21,7 +21,6 @@
         "Rapid Metro": "#283593",
     };
 
-    // Robust color lookup to handle casing issues like "Yellow Line" vs "Yellow line"
     const getLineColor = (lineName) => {
         if (!lineName) return "#757575";
         const normalized = lineName.toLowerCase().replace(/[^a-z0-9]/g, "");
@@ -32,7 +31,6 @@
             }
         }
 
-        // Safety fallbacks if the name is partially matched
         if (normalized.includes("yellow")) return "#F5C800";
         if (normalized.includes("red")) return "#E53935";
         if (normalized.includes("blue")) return "#1565C0";
@@ -57,6 +55,10 @@
     const V_SHIFT = 64;
     const PAD_X = 80;
     const PAD_Y = 120;
+
+    // Minimum horizontal gap needed so the line-label badge fits over the track
+    // without the mask cutout eating the entire segment.
+    const MIN_SEG_FOR_BADGE = 160;
 
     $: layout = (() => {
         if (!route?.route?.length) return null;
@@ -87,10 +89,14 @@
             let lineNameForBadge =
                 isNewLineStart && i < n - 1 ? segLines[i] : null;
 
+            // ── FIX: compute the step first so we know how long this segment is,
+            //    then decide whether there's enough room to place a badge on it.
+            let badgeW = lineNameForBadge
+                ? lineNameForBadge.length * 7 + 24
+                : 0;
             let stepX = 120;
 
             if (lineNameForBadge) {
-                let badgeW = lineNameForBadge.length * 7 + 24;
                 let neededX = badgeW + 80;
                 if (i > 0) neededX += V_SHIFT;
                 stepX = Math.max(stepX, neededX);
@@ -113,17 +119,23 @@
                 }
 
                 if (lineNameForBadge) {
-                    // Center the label perfectly on the horizontal part of the FIRST segment
-                    // This prevents masks from accidentally cutting out track corners or floating out of bounds on short runs.
                     let horizontalLen = stepX;
                     if (isNewLineStart && i > 0) horizontalLen -= V_SHIFT;
+
+                    // ── FIX: only place the badge ON the track when the horizontal
+                    //    segment is long enough that the mask cutout won't consume
+                    //    the whole thing. Otherwise, float the badge above the track.
+                    const badgeOnTrack = horizontalLen >= MIN_SEG_FOR_BADGE;
 
                     lineLabels.push({
                         name: lineNameForBadge,
                         color: getLineColor(lineNameForBadge),
                         x: currentX + horizontalLen / 2,
-                        y: currentY,
+                        // When the segment is too short, lift the badge above the line
+                        // so the mask leaves the track untouched.
+                        y: badgeOnTrack ? currentY : currentY - 28,
                         width: lineNameForBadge.length * 7 + 20,
+                        onTrack: badgeOnTrack,
                     });
                 }
 
@@ -157,22 +169,13 @@
                 let calloutW = pt.transferTo.length * 12 + 70;
                 let calloutSide = pt.lblSide === "above" ? "below" : "above";
                 if (pt.lblSide === "rotated") calloutSide = "above";
-
-                // transferCallouts.push({
-                //     x: pt.x,
-                //     y: pt.y,
-                //     side: calloutSide,
-                //     text: "Change to " + pt.transferTo,
-                //     color: getLineColor(pt.transferTo),
-                //     width: calloutW,
-                // });
             }
         }
 
         for (let i = 0; i < n - 1; i++) {
             const a = pts[i],
                 b = pts[i + 1];
-            const color = getLineColor(segLines[i]); // Safely resolve line color
+            const color = getLineColor(segLines[i]);
             const dy = b.y - a.y;
             const dx = b.x - a.x;
 
@@ -249,9 +252,7 @@
             isAnimating = false;
         }, 400);
 
-        // --- CHANGE THIS BLOCK ---
         if (window.ReactNativeWebView) {
-            // Send the station name as a string message to React Native
             window.ReactNativeWebView.postMessage(pt.name);
         }
     }
@@ -378,57 +379,8 @@
                 ? 'transform 0.4s ease-out'
                 : 'none'};"
         >
-            <defs>
-                <mask id="track-cutout">
-                    <rect
-                        x="-50000"
-                        y="-50000"
-                        width="100000"
-                        height="100000"
-                        fill="white"
-                    />
-
-                    {#each layout.lineLabels as lbl}
-                        <rect
-                            x={lbl.x - lbl.width / 2 - 4}
-                            y={lbl.y - 14}
-                            width={lbl.width + 8}
-                            height={28}
-                            rx={14}
-                            fill="black"
-                        />
-                    {/each}
-
-                    {#each layout.pts as pt}
-                        {#if pt.isTerm}
-                            <circle
-                                cx={pt.x}
-                                cy={pt.y}
-                                r={TERM_R + 4}
-                                fill="black"
-                            />
-                        {:else if pt.isTransfer}
-                            <rect
-                                x={pt.x - XFER_W / 2 - 4}
-                                y={pt.y - XFER_H / 2 - 4}
-                                width={XFER_W + 8}
-                                height={XFER_H + 8}
-                                rx={(XFER_H + 8) / 2}
-                                fill="black"
-                            />
-                        {:else}
-                            <circle
-                                cx={pt.x}
-                                cy={pt.y}
-                                r={STOP_R + 4}
-                                fill="black"
-                            />
-                        {/if}
-                    {/each}
-                </mask>
-            </defs>
-
-            <g mask="url(#track-cutout)">
+            <!-- Layer 1: track segments (drawn first, nodes paint on top naturally) -->
+            <g>
                 {#each layout.segs as seg}
                     <path
                         d={seg.d}
@@ -438,6 +390,55 @@
                         stroke-linejoin="round"
                         fill="none"
                     />
+                {/each}
+            </g>
+
+            <!-- Layer 2: node background covers (painted before the node shape so
+                 the track colour doesn't bleed through the node fill).
+                 Use the background colour as a slightly-larger filled shape. -->
+            <g>
+                {#each layout.pts as pt}
+                    {#if pt.isTerm}
+                        <circle
+                            cx={pt.x}
+                            cy={pt.y}
+                            r={TERM_R + 3}
+                            fill="var(--node-base)"
+                        />
+                    {:else if pt.isTransfer}
+                        <rect
+                            x={pt.x - XFER_W / 2 - 3}
+                            y={pt.y - XFER_H / 2 - 3}
+                            width={XFER_W + 6}
+                            height={XFER_H + 6}
+                            rx={(XFER_H + 6) / 2}
+                            fill="var(--node-base)"
+                        />
+                    {:else}
+                        <circle
+                            cx={pt.x}
+                            cy={pt.y}
+                            r={STOP_R + 3}
+                            fill="var(--node-base)"
+                        />
+                    {/if}
+                {/each}
+            </g>
+
+            <!-- Layer 3: line-label badge background covers (same idea — blank out
+                 the track behind a badge so the pill looks clean) -->
+            <g>
+                {#each layout.lineLabels as lbl}
+                    {#if lbl.onTrack}
+                        <rect
+                            x={lbl.x - lbl.width / 2 - 4}
+                            y={lbl.y - 12}
+                            width={lbl.width + 8}
+                            height={24}
+                            rx={12}
+                            fill="var(--node-base)"
+                        />
+                    {/if}
                 {/each}
             </g>
 
@@ -660,30 +661,27 @@
         background-color: transparent !important;
     }
 
-    :root {
+    :root.light {
         --text-main: #f3f4f6;
         --text-pill: #1a1c29;
         --text-sec: #9ca3af;
         --text-inv: #1a1c29;
         --border-color: #3b4054;
-        --node-base: #161925;
+        --node-base: #f3f4f6;
         --node-bg: #1a1c29;
         --node-highlight: #e2e4e9;
         --grid-color: rgba(0, 0, 0, 0.08);
     }
-
-    @media (prefers-color-scheme: dark) {
-        :root {
-            --text-main: #ffffff;
-            --text-sec: #9ca3af;
-            --text-pill: #f3f4f6;
-            --border-color: #3b4054;
-            --node-base: #161925;
-            --node-bg: #1a1c29;
-            --node-highlight: #ffffff;
-            --grid-color: rgba(255, 255, 255, 0.05);
-            --text-inv: black;
-        }
+    :root.dark {
+        --text-main: #ffffff;
+        --text-sec: #9ca3af;
+        --text-pill: #f3f4f6;
+        --border-color: #3b4054;
+        --node-base: #161925;
+        --node-bg: #1a1c29;
+        --node-highlight: #ffffff;
+        --grid-color: rgba(255, 255, 255, 0.05);
+        --text-inv: black;
     }
 
     .canvas {
